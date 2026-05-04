@@ -39,9 +39,7 @@ function notifyResponse(
   const requestInfo = requestMap.get(requestId)
   if (customInterceptor.onResponse && requestInfo) {
     const resource =
-      requestInfo.resource instanceof URL
-        ? requestInfo.resource.toString()
-        : requestInfo.resource
+      requestInfo.resource instanceof URL ? requestInfo.resource.toString() : requestInfo.resource
     customInterceptor.onResponse(requestId, response, resource, requestInfo.config)
   }
   requestMap.delete(requestId)
