@@ -4,7 +4,9 @@ import union from 'lodash/union'
 import without from 'lodash/without'
 import unidecode from 'unidecode'
 import type { EventFuncID, ValueOp } from './types'
+import * as VueRuntime from 'vue'
 import { type DefineComponent, defineComponent, inject, ref, type Ref } from 'vue'
+import { compile as compileTemplateToCode } from '@vue/compiler-dom'
 
 export function buildPushState(eventFuncId: EventFuncID, url: string): any {
   const loc = eventFuncId.location
@@ -190,6 +192,59 @@ function formSet(form: FormData, fieldName: string, val: string): boolean {
   return true
 }
 
+// renderCache bounds the runtime template compiler.
+//
+// Vue's own runtime compiler (`compileToFunction`) memoizes every distinct
+// template string in a module-global object that is *never* evicted. go-plaid
+// re-renders whole portals on a timer (e.g. the translation panels poll every
+// 10s while a job runs), and those templates bake in wall-clock text — elapsed
+// times, ETAs, progress — so each tick is a brand-new string. Left open for
+// hours, the built-in cache grows without bound until the tab runs out of
+// memory. We compile through our own bounded LRU instead so a long-lived,
+// timer-refreshed page can never accumulate more than RENDER_CACHE_MAX
+// compiled render functions.
+const RENDER_CACHE_MAX = 500
+const renderCache = new Map<string, Function>()
+
+function compileTemplateBounded(template: string): Function {
+  const cached = renderCache.get(template)
+  if (cached) {
+    // Mark most-recently-used: re-insert to move to the end of the Map order.
+    renderCache.delete(template)
+    renderCache.set(template, cached)
+    return cached
+  }
+  // Mirror the options Vue's built-in compileToFunction uses, so output is
+  // byte-for-byte what the runtime would have produced (compiler-dom is pinned
+  // to the exact same version as vue).
+  const { code } = compileTemplateToCode(template, {
+    hoistStatic: true,
+    isCustomElement:
+      typeof customElements !== 'undefined'
+        ? (tag: string) => !!customElements.get(tag)
+        : undefined
+  })
+  const render = new Function('Vue', code)(VueRuntime) as Function
+  ;(render as any)._rc = true
+  renderCache.set(template, render)
+  if (renderCache.size > RENDER_CACHE_MAX) {
+    // Evict the least-recently-used entry (the first key in insertion order).
+    const oldest = renderCache.keys().next().value
+    if (oldest !== undefined) {
+      renderCache.delete(oldest)
+    }
+  }
+  return render
+}
+
+// Test-only inspection of the bounded compile cache. Not part of the public
+// API; it lets a spec assert the cache never grows past its cap.
+export const __renderCacheForTest = {
+  size: () => renderCache.size,
+  max: RENDER_CACHE_MAX,
+  clear: () => renderCache.clear()
+}
+
 export function componentByTemplate(
   template: string,
   form: any,
@@ -216,7 +271,9 @@ export function componentByTemplate(
         }
       })
     },
-    template
+    // Pass a precompiled render (via our bounded cache) rather than `template`,
+    // which would route through Vue's unbounded global compile cache.
+    render: compileTemplateBounded(template)
   })
 }
 
