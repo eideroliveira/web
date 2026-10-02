@@ -72,8 +72,15 @@ func (p *PageBuilder) WrapEventFunc(w func(in EventFunc) EventFunc) (r *PageBuil
 	return p
 }
 
+// MergeHub prepends hub's event funcs to the page's own. The result is a
+// fresh slice: appending onto hub.eventFuncs would write the page's funcs
+// (its __reload__ among them) into the hub's spare capacity, where every
+// other page merging the same hub shares the slot and the hub's next
+// RegisterEventFunc overwrites it.
 func (p *PageBuilder) MergeHub(hub *EventsHub) (r *PageBuilder) {
-	p.EventsHub.eventFuncs = append(hub.eventFuncs, p.EventsHub.eventFuncs...)
+	merged := make([]*idEventFunc, 0, len(hub.eventFuncs)+len(p.eventFuncs))
+	merged = append(merged, hub.eventFuncs...)
+	p.EventsHub.eventFuncs = append(merged, p.EventsHub.eventFuncs...)
 	return p
 }
 
